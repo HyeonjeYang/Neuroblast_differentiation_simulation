@@ -1,0 +1,416 @@
+==============================================================================
+  NOTCH-DELTA-ASC LATERAL INHIBITION SIMULATOR v2.0
+  User Manual
+==============================================================================
+
+  Last updated: April 2026
+  Python >= 3.9 required
+  Dependencies: numpy, scipy, matplotlib, tqdm
+  Optional: cupy (GPU acceleration)
+
+==============================================================================
+  TABLE OF CONTENTS
+==============================================================================
+
+  1. Quick Start
+  2. Command-Line Arguments (Full Reference)
+  3. Running Modes
+  4. Cell Tracking
+  5. Output Files
+  6. Parameter Tuning Guide
+  7. Phase Diagram Interpretation
+  8. Working with Parameter Files
+  9. GPU Acceleration
+  10. Troubleshooting & Tips
+
+==============================================================================
+  1. QUICK START
+==============================================================================
+
+  Install dependencies:
+
+    pip install numpy scipy matplotlib tqdm
+
+  Run with all defaults (stochastic, 7x7 hex lattice, 200 time units):
+
+    python notch_delta_simulator.py
+
+  This produces 12 output files in the results/ directory, including
+  lattice plots, time series, Monte Carlo analysis, bifurcation diagram,
+  phase diagram, and a summary dashboard.
+
+  A minimal quick run for testing (smaller lattice, shorter time):
+
+    python notch_delta_simulator.py --rows 5 --cols 5 --t_end 80 --mc_runs 20
+
+==============================================================================
+  2. COMMAND-LINE ARGUMENTS (FULL REFERENCE)
+==============================================================================
+
+  LATTICE
+  -------
+  --rows INT          Number of rows in hex lattice (default: 7)
+  --cols INT          Number of columns (default: 7)
+                      Total cells = rows x cols
+
+  SIMULATION TIME
+  ---------------
+  --t_end FLOAT       Total simulation time (default: 200.0)
+  --dt FLOAT          Integration time step (default: 0.01)
+                      Smaller dt = more accurate but slower.
+                      For SDE, dt <= 0.02 is recommended.
+
+  INITIAL CONDITION NOISE
+  -----------------------
+  --noise_ic FLOAT    Std dev of Gaussian noise added to initial
+                      concentrations (default: 0.15).
+                      This is what breaks the initial symmetry.
+
+  STOCHASTIC / DETERMINISTIC
+  --------------------------
+  --stochastic        Use Euler-Maruyama SDE integration (default)
+  --no-stochastic     Use RK4 deterministic integration
+  --noise_type STR    "multiplicative" (default) or "additive"
+                      Multiplicative: sigma * sqrt(X) * dW
+                      Additive:       sigma * dW
+
+  SDE NOISE INTENSITIES
+  ---------------------
+  --sigma_D FLOAT     Delta intrinsic noise (default: 0.05)
+  --sigma_N FLOAT     Notch intrinsic noise (default: 0.05)
+  --sigma_A FLOAT     Active Notch noise (default: 0.03)
+  --sigma_ASC FLOAT   ASC intrinsic noise (default: 0.05)
+
+  MONTE CARLO
+  -----------
+  --mc_runs INT       Number of MC realizations (default: 100)
+  --threshold FLOAT   ASC threshold for neuroblast fate (default: 5.0)
+
+  CELL TRACKING
+  -------------
+  --track STR         Comma-separated cell indices to track.
+                      Example: --track 0,12,24,6,18
+                      If omitted, 5 cells are auto-selected.
+
+  MODEL PARAMETERS
+  ----------------
+  --lambda_D FLOAT    Delta max production rate (default: 5.0)
+  --K_ASC FLOAT       Hill threshold: ASC -> Delta (default: 0.3)
+  --n_d FLOAT         Hill coefficient for Delta (default: 5.0)
+  --d_D FLOAT         Delta degradation rate (default: 0.2)
+  --f_D FLOAT         Delta trans-binding consumption (default: 0.05)
+  --lambda_N FLOAT    Notch production rate (default: 1.5)
+  --d_N FLOAT         Notch degradation rate (default: 0.2)
+  --f_N FLOAT         Trans-activation rate (default: 0.8)
+  --a_cis FLOAT       Cis-inhibition strength (default: 0.1)
+  --b_cis FLOAT       Cis-inhibition saturation (default: 2.0)
+  --d_A FLOAT         Active Notch degradation (default: 0.3)
+  --lambda_ASC FLOAT  ASC max production rate (default: 5.0)
+  --d_ASC FLOAT       ASC degradation rate (default: 0.15)
+  --K_d FLOAT         Hill threshold: NICD -> ASC (default: 0.5)
+  --n_ASC FLOAT       Hill coefficient for ASC (default: 5.0)
+
+  I/O
+  ---
+  --outdir STR        Output directory (default: results)
+  --load_params STR   Load parameters from a .txt file
+  --gpu               Enable CuPy GPU acceleration
+
+==============================================================================
+  3. RUNNING MODES
+==============================================================================
+
+  MODE 1: STOCHASTIC (default)
+  ----------------------------
+  Uses Euler-Maruyama SDE integration. Each run produces different
+  results due to Wiener noise. This is the biologically realistic mode.
+
+    python notch_delta_simulator.py
+
+  MODE 2: DETERMINISTIC
+  ---------------------
+  Uses RK4 integration. Results are reproducible given the same seed
+  (noise only in initial conditions). Useful for parameter exploration.
+
+    python notch_delta_simulator.py --no-stochastic
+
+  MODE 3: HIGH-NOISE STOCHASTIC
+  -----------------------------
+  Increase SDE noise to study noise-driven differentiation:
+
+    python notch_delta_simulator.py --sigma_D 0.15 --sigma_ASC 0.15
+
+  MODE 4: LARGE-SCALE SIMULATION
+  ------------------------------
+  Bigger lattice with more MC runs for publication-quality statistics:
+
+    python notch_delta_simulator.py --rows 11 --cols 11 --mc_runs 500 \
+      --t_end 300 --dt 0.005
+
+  NOTE: Computation time scales as O(rows * cols * t_end/dt * mc_runs).
+  A 7x7 lattice with t_end=200 and mc_runs=100 takes roughly 5-10 min
+  on a modern CPU.
+
+==============================================================================
+  4. CELL TRACKING
+==============================================================================
+
+  Cell indices are numbered 0 to (rows*cols - 1), row by row.
+
+  For a 5x5 lattice:
+
+    Row 0:  [ 0]  [ 1]  [ 2]  [ 3]  [ 4]
+    Row 1:  [ 5]  [ 6]  [ 7]  [ 8]  [ 9]
+    Row 2:  [10]  [11]  [12]  [13]  [14]
+    Row 3:  [15]  [16]  [17]  [18]  [19]
+    Row 4:  [20]  [21]  [22]  [23]  [24]
+
+  To track the center cell and four corners:
+
+    python notch_delta_simulator.py --rows 5 --cols 5 --track 0,4,12,20,24
+
+  Tracked cells are:
+    - Highlighted with gold stars on all lattice plots
+    - Drawn with thick colored lines on time series
+    - Given their own dedicated tracking plots:
+        *_cell_tracking.png   (all 4 variables per cell)
+        *_asc_tracking.png    (ASC only, with NB threshold zone)
+
+  If --track is not specified, the simulator auto-selects ~5 cells
+  (center, corners, mid-edges) so you always get tracking output.
+
+==============================================================================
+  5. OUTPUT FILES
+==============================================================================
+
+  All files are saved as PREFIX_SUFFIX.EXT in the output directory.
+  Default prefix: "notch_delta". Change with --save_prefix via param file.
+
+  FILE                        DESCRIPTION
+  --------------------------  ----------------------------------------------
+  *_parameters.txt            All parameters (human-readable, reloadable)
+  *_lattice_ASC.png           Hex lattice: final ASC concentration
+  *_lattice_Delta.png         Hex lattice: final Delta concentration
+  *_timeseries.png            Time series of D, N, A, ASC (all cells)
+  *_cell_tracking.png         Tracked cells: 4-panel (D, N, A, ASC)
+  *_asc_tracking.png          Tracked cells: ASC with NB threshold
+  *_mc_prob.png               Monte Carlo: P(neuroblast) per position
+  *_mc_hist.png               Monte Carlo: NB count histogram
+  *_noise_sweep.png           SDE noise intensity vs differentiation
+  *_bifurcation.png           Bifurcation diagram (lambda_D by default)
+  *_phase_diagram.png         Phase classification (f_N x sigma_D)
+  *_dashboard.png             9-panel summary with all key results
+
+==============================================================================
+  6. PARAMETER TUNING GUIDE
+==============================================================================
+
+  If you are not getting clear lateral inhibition patterns, try these:
+
+  PROBLEM: All cells go to low ASC (no neuroblasts)
+  ------------------------------------------------
+  - Increase noise_ic (try 0.2 - 0.3)
+  - Increase sigma_D and sigma_ASC (try 0.08 - 0.15)
+  - Decrease f_N (weaker trans-activation lets noise break symmetry)
+  - Increase t_end (pattern may need more time to develop)
+
+  PROBLEM: Too many neuroblasts (no inhibition)
+  ---------------------------------------------
+  - Increase f_N (stronger lateral inhibition)
+  - Increase n_d and n_ASC (steeper Hill = sharper switching)
+  - Decrease lambda_D (less Delta production)
+
+  PROBLEM: Noisy / unstable dynamics
+  ----------------------------------
+  - Decrease dt (try 0.005)
+  - Decrease sigma values
+  - Use --no-stochastic to check if it is noise-driven instability
+
+  PROBLEM: Simulation too slow
+  ----------------------------
+  - Increase dt (try 0.02, but check for numerical artifacts)
+  - Reduce rows/cols
+  - Reduce mc_runs for initial exploration
+  - Use --gpu if CuPy is installed
+
+  KEY PARAMETERS AND THEIR EFFECTS
+  ---------------------------------
+
+  f_N (trans-activation rate)
+    Low f_N  -> weak coupling -> fewer neuroblasts, slower patterning
+    High f_N -> strong coupling -> fast patterning, more robust
+
+  lambda_D (Delta production)
+    Low  -> weak Delta signal -> sparse neuroblasts
+    High -> strong global inhibition -> can suppress all cells
+
+  n_d, n_ASC (Hill coefficients)
+    Low (1-2) -> graded response -> fuzzy boundaries
+    High (4-6) -> switch-like -> sharp neuroblast/epidermis separation
+
+  sigma_* (SDE noise)
+    0         -> no ongoing noise (only IC noise)
+    0.01-0.05 -> mild fluctuations (realistic)
+    0.1+      -> strong noise (can disrupt or enhance patterning)
+
+  noise_sigma_ic (initial condition noise)
+    0         -> perfect symmetry (no pattern without SDE noise)
+    0.05-0.15 -> typical (mild symmetry breaking)
+    0.3+      -> strong initial heterogeneity
+
+==============================================================================
+  7. PHASE DIAGRAM INTERPRETATION
+==============================================================================
+
+  The phase diagram sweeps two parameters (default: f_N and sigma_D)
+  and classifies each point into one of five states:
+
+    uniform_low   (gray)    No neuroblasts. System collapses to
+                            homogeneous low-ASC state.
+
+    sparse_NB     (green)   < 15% of cells become neuroblasts.
+                            Weak lateral inhibition.
+
+    salt_pepper   (blue)    15-45% neuroblasts. Classic lateral
+                            inhibition with well-spaced NB pattern.
+                            This is the biologically correct regime.
+
+    mixed         (orange)  45-80% neuroblasts. Intermediate or
+                            chaotic dynamics. Unstable patterning.
+
+    uniform_high  (red)     > 80% neuroblasts. Inhibition failure.
+                            All cells adopt neuroblast fate.
+
+  The goal is to find the "salt_pepper" regime. For the default
+  parameters, most of the f_N > 0.3 space falls in this regime.
+
+==============================================================================
+  8. WORKING WITH PARAMETER FILES
+==============================================================================
+
+  SAVING: Every run automatically saves a *_parameters.txt file.
+
+  LOADING: Use --load_params to reproduce a previous run:
+
+    python notch_delta_simulator.py --load_params results/notch_delta_parameters.txt
+
+  EDITING: The parameter file is plain text. You can edit it directly:
+
+    [Delta]
+      lambda_D = 5.0      <-- change this value
+      K_ASC = 0.3
+      ...
+
+  FORMAT: Each line is "key = value". Lines starting with =, #, or [
+  are ignored. The loader matches keys to known parameter names.
+
+  SHARING: To share your exact configuration with a collaborator,
+  send them the _parameters.txt file and the simulator script.
+
+==============================================================================
+  9. GPU ACCELERATION
+==============================================================================
+
+  The simulator supports CuPy as a drop-in NumPy replacement for
+  GPU-accelerated array operations.
+
+  INSTALL:
+    pip install cupy-cuda12x    (for CUDA 12.x)
+    pip install cupy-cuda11x    (for CUDA 11.x)
+
+  RUN:
+    python notch_delta_simulator.py --gpu
+
+  WHAT GETS ACCELERATED:
+    - Matrix-vector products (adjacency @ state)
+    - Element-wise ODE/SDE computations
+    - Noise generation
+
+  WHEN IT HELPS:
+    - Large lattices (11x11 and above)
+    - Long simulations (t_end > 500)
+    - For small lattices, CPU may actually be faster due to
+      GPU memory transfer overhead.
+
+  The simulator automatically falls back to NumPy if CuPy is not
+  installed, so --gpu is silently ignored.
+
+==============================================================================
+  10. TROUBLESHOOTING & TIPS
+==============================================================================
+
+  Q: I get NaN or Inf values in the simulation.
+  A: Decrease dt. For stochastic mode, try dt=0.005. Also check that
+     your parameter values are reasonable (no negative rates).
+
+  Q: The lattice plot looks uniform / no pattern.
+  A: Check the colorbar range. If ASC varies from 0.130 to 0.131,
+     there IS variation but it is tiny. The system may not have
+     reached steady state. Increase t_end, or see Section 6 for
+     parameter tuning.
+
+  Q: Monte Carlo takes too long.
+  A: Start with mc_runs=20 for exploration. Use the full 100+ only
+     for final results. The MC is embarrassingly parallel, so you
+     could also split runs across machines using different seeds.
+
+  Q: How do I change which parameters the phase diagram sweeps?
+  A: Currently the phase diagram sweeps f_N and sigma_D by default.
+     To change this, edit the run_full_pipeline() function in the
+     script. Look for the "[8/8] Phase diagram" section and modify
+     the parameter names and ranges.
+
+  Q: Can I run just a single simulation without all the analysis?
+  A: Yes. Use the classes directly in a Python script:
+
+       from notch_delta_simulator import Parameters, Simulator
+       params = Parameters(rows=7, cols=7, t_end=200)
+       sim = Simulator(params)
+       t, y = sim.run_single(seed=42)
+
+  Q: How do I extract data for custom analysis?
+  A: The state array y has shape (n_frames, 4*n_cells). To get the
+     ASC of cell 12 at all time points:
+
+       n = params.rows * params.cols  # total cells
+       asc_cell12 = y[:, 3*n + 12]
+
+     Variable layout: [D_0..D_n | N_0..N_n | A_0..A_n | ASC_0..ASC_n]
+
+  Q: The stochastic and deterministic runs give very different results.
+  A: This is expected. In the deterministic case, only IC noise breaks
+     symmetry. In the stochastic case, ongoing noise can cause cells
+     to switch fate even after initial patterning. If you want
+     deterministic-like behavior with some noise, use very low sigma
+     values (0.001-0.01).
+
+==============================================================================
+  EXAMPLE WORKFLOWS
+==============================================================================
+
+  WORKFLOW 1: Basic exploration
+  -----------------------------
+    python notch_delta_simulator.py --rows 5 --cols 5 --t_end 80 \
+      --mc_runs 20 --track 0,12,24
+
+  WORKFLOW 2: Comparing stochastic vs deterministic
+  -------------------------------------------------
+    python notch_delta_simulator.py --outdir results_sde
+    python notch_delta_simulator.py --no-stochastic --outdir results_ode
+
+  WORKFLOW 3: Noise sensitivity analysis
+  --------------------------------------
+    python notch_delta_simulator.py --sigma_D 0.01 --outdir results_low_noise
+    python notch_delta_simulator.py --sigma_D 0.10 --outdir results_high_noise
+
+  WORKFLOW 4: Publication-quality run
+  -----------------------------------
+    python notch_delta_simulator.py --rows 9 --cols 9 --t_end 300 \
+      --dt 0.005 --mc_runs 500 --track 0,4,40,36,20
+
+  WORKFLOW 5: Reproducing a previous experiment
+  ----------------------------------------------
+    python notch_delta_simulator.py \
+      --load_params results/notch_delta_parameters.txt
+
+==============================================================================
